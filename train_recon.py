@@ -44,7 +44,6 @@ class ImageDataset(Dataset):
         ])
 
     def add_image(self, image):
-        image = Image.fromarray(image)
         self.images.append(image)
 
     def __len__(self):
@@ -56,7 +55,7 @@ class ImageDataset(Dataset):
         target_image = self.recon_transform(image)
         input_image = self.backbone_transform(image)
 
-        return input_image, target_image
+        return input_image, target_image, idx
 
 def run_environment(queue, steps, outdir):
     env = crafter.Env()
@@ -73,9 +72,11 @@ def run_environment(queue, steps, outdir):
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        queue.put(obs)  # Add the observation to the queue
+        image = Image.fromarray(obs)
 
-def train_model(queue, total_steps):
+        queue.put(image)  # Add the observation to the queue
+
+def train_model(queue, total_steps, training_interval):
     model_backbone = DINOv2Backbone()
     model_backbone.eval()
     model_backbone.to(device)
@@ -106,6 +107,8 @@ def train_model(queue, total_steps):
 
     dataset = ImageDataset(model_backbone)
 
+    embeddings_cache = {}
+
     print(f"Loaded model.  Awaiting training data...")
 
     for step in tqdm(range(total_steps), desc="Training Progress"):
@@ -113,7 +116,7 @@ def train_model(queue, total_steps):
 
         dataset.add_image(obs)
 
-        if len(dataset) % 1000 != 0:
+        if len(dataset) % training_interval != 0:
             continue
 
         # Split dataset into training and validation
@@ -124,21 +127,57 @@ def train_model(queue, total_steps):
         train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False)
 
+        def get_cached_batch_embeddings(indices_batch, cache_batch_size=16):
+            # Convert indices_batch to a list for indexing
+            indices_batch_list = indices_batch.tolist()
+
+            # Initialize the embeddings list
+            embeddings_list = [None] * len(indices_batch)
+
+            # Identify uncached indices and prepare smaller batches of them
+            uncached_indices = [index for index in indices_batch_list if index not in embeddings_cache]
+            sub_batches = [uncached_indices[i:i+cache_batch_size] for i in range(0, len(uncached_indices), cache_batch_size)]
+
+            # Process each sub-batch and update the cache
+            for sub_batch in sub_batches:
+                if len(sub_batch) <= 0:
+                    continue
+
+                # Prepare the sub-batch for processing
+                sub_batch_input = torch.stack([input_batch[indices_batch_list.index(index)] for index in sub_batch])
+
+                # Process the sub-batch
+                with torch.no_grad():
+                    sub_batch_embeddings = model_backbone(sub_batch_input)
+
+                # Update cache and embeddings_list
+                for i, index in enumerate(sub_batch):
+                    embeddings = sub_batch_embeddings[i]
+                    embeddings_cache[index] = embeddings
+                    embeddings_list[indices_batch_list.index(index)] = embeddings
+
+            # Fill in the cached embeddings for the rest of the batch
+            for i, index in enumerate(indices_batch_list):
+                if embeddings_list[i] is None:
+                    embeddings_list[i] = embeddings_cache[index]
+
+            return embeddings_list
+
         prev_val_loss = float('inf')
         while True:
             # Training phase
             model_neck.train()
             model_decoder.train()
-            for input_batch, target_batch in train_loader:
+            for input_batch, target_batch, indices_batch in train_loader:
                 input_batch, target_batch = input_batch.to(device), target_batch.to(device)
+
+                batch_embeddings = torch.stack(get_cached_batch_embeddings(indices_batch))
+                batch_embeddings = batch_embeddings.to(device)
 
                 neck_optimizer.zero_grad()
                 decoder_optimizer.zero_grad()
 
-                with torch.no_grad():
-                    embeddings = model_backbone(input_batch)
-
-                outputs = model_neck(embeddings)
+                outputs = model_neck(batch_embeddings)
                 recon = model_decoder(outputs)
                 loss = loss_function(recon, target_batch)
 
@@ -152,12 +191,13 @@ def train_model(queue, total_steps):
             total_val_loss = 0.0
             num_batches = 0
             with torch.no_grad():
-                for input_batch, target_batch in val_loader:
+                for input_batch, target_batch, indices_batch in val_loader:
                     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
 
-                    with torch.no_grad():
-                        embeddings = model_backbone(input_batch)
-                    outputs = model_neck(embeddings)
+                    batch_embeddings = torch.stack(get_cached_batch_embeddings(indices_batch))
+                    batch_embeddings = batch_embeddings.to(device)
+
+                    outputs = model_neck(batch_embeddings)
                     recon = model_decoder(outputs)
 
                     val_loss = loss_function(recon, target_batch)
@@ -178,9 +218,10 @@ def train_model(queue, total_steps):
 
 
 def main():
-    N = 2  # Number of processes
+    N = 5  # Number of processes
     queue = multiprocessing.Queue()
     total_steps = int(1e6)
+    training_interval = 1000
     outdir_base = 'logdir/crafter_noreward-random/'
 
     processes = []
@@ -194,7 +235,7 @@ def main():
         process.start()
 
     # Run the training in the main process
-    train_model(queue, total_steps)
+    train_model(queue, total_steps, training_interval)
 
     try:
         # Wait for all environment processes to finish

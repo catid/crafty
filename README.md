@@ -19,3 +19,9 @@ pip install -r requirements.txt
 ```bash
 python train_recon.py
 ```
+
+Kill hanging processes:
+
+```bash
+pkill -f train_recon.py
+```
