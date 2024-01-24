@@ -125,10 +125,8 @@ class DINOv2Backbone(nn.Module):
         # Get the last layer
         features = self.pretrained.get_intermediate_layers(x, 1, reshape=True, return_class_token=False)
 
-        tiles = features[0][0]
-        #class_token = features[0][1]
-
-        return tiles
+        batch = torch.stack(features, dim=0).squeeze(0)
+        return batch
 
 
 ################################################################################
