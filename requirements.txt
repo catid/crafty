@@ -1,0 +1,13 @@
+torch
+torchvision
+einops
+
+xformers
+x_transformers
+
+pillow
+tqdm
+
+gymnasium
+PyParsing
+git+https://github.com/catid/crafter.git#egg=crafter
