@@ -1,10 +1,11 @@
 torch
 torchvision
 einops
+deepspeed
 
 xformers
-x_transformers
 
+lovely-tensors
 pillow
 tqdm
 

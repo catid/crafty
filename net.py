@@ -1,8 +1,41 @@
+# Ideas:
+# Data augmentation by masking DINOv2 features
+
 import torch
 from torch import nn
 import torch.nn.functional as F
 from functools import partial
 from einops.layers.torch import Rearrange, Reduce
+
+
+# NestNets seem to be more sample efficient? https://arxiv.org/pdf/2205.09459.pdf
+class HyperFFN(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.):
+        super().__init__()
+        #self.ffn = PreNormResidual(dim, FeedForward(dim, hidden_dim, dropout))
+
+        # Use one scalar parameter for each unique operation (edge)
+        self.params = nn.ParameterList([nn.Parameter(torch.empty(1)) for _ in range(8)])
+        # Bias terms for each operation
+        self.biases = nn.ParameterList([nn.Parameter(torch.zeros(dim)) for _ in range(8)])
+        self._init_parameters()
+
+    def _init_parameters(self):
+        for param in self.params:
+            nn.init.normal_(param)  # Initialize with a normal distribution
+        for bias in self.biases:
+            nn.init.zeros_(bias)  # Initialize biases to zero
+
+    def forward(self, x):
+        x = self.ffn(x)
+        y = F.gelu(x * self.params[0] + self.biases[0])
+        z = F.gelu(x * self.params[1] + self.biases[1])
+        y, z = self.ffn(y), self.ffn(z)
+        u = F.gelu((y * self.params[2] + self.biases[2]) + (z * self.params[3] + self.biases[3]))
+        v = F.gelu((y * self.params[4] + self.biases[4]) + (z * self.params[5] + self.biases[5]))
+        u, v = self.ffn(u), self.ffn(v)
+        w = F.gelu((u * self.params[6] + self.biases[6]) + (v * self.params[7] + self.biases[7]))
+        return self.ffn(w)
 
 
 ################################################################################

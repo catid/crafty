@@ -1,0 +1,2 @@
+# Make sure the local machine is first so that rank=0 prints locally
+gpu4.lan slots=2
