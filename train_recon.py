@@ -204,6 +204,7 @@ def train_model(args):
     # Now you can use train_loader and val_loader in your training and validation loops
     # Example:
     for epoch in range(4):
+        print(f"RESET epoch={epoch}")
         image_iterator.reset(seed=epoch)
         embed_iterator.reset(seed=epoch)
 
@@ -215,8 +216,6 @@ def train_model(args):
             print(f"normalized = {normalized}")
             print(f"scaled = {scaled}")
             print(f"embeddings = {embeddings}")
-
-        print(f"epoch={epoch}")
 
     return
 

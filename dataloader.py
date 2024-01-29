@@ -33,13 +33,17 @@ class ExternalInputIterator:
         else:
             self.end_idx = self.start_idx + data_per_shard
 
-        #print(f"reset shard_id={self.shard_id} total_count={total_count} data_per_shard={data_per_shard} start_idx={self.start_idx} end_idx={self.end_idx}")
+        self.i = self.start_idx
+
+        print(f"ExternalInputIterator reset shard_id={self.shard_id} total_count={total_count} data_per_shard={data_per_shard} start_idx={self.start_idx} end_idx={self.end_idx}")
 
     def __iter__(self):
         self.i = self.start_idx
+        print(f"ExternalInputIterator __iter__")
         return self
 
     def __next__(self):
+        print(f"ExternalInputIterator __next__")
         if self.i >= self.end_idx:
             raise StopIteration
 
@@ -55,8 +59,7 @@ def in_memory_pipeline(image_iterator, embed_iterator, crop_w=224, crop_h=224, f
 
     images = fn.external_source(
         source=image_iterator,
-        device="gpu",
-        name="Reader")
+        device="gpu")
 
     # Original transformations
     images_resized = fn.resize(images, resize_x=crop_w, resize_y=crop_h, interp_type=types.INTERP_TRIANGULAR)
@@ -73,7 +76,9 @@ def in_memory_pipeline(image_iterator, embed_iterator, crop_w=224, crop_h=224, f
                                  mean=[127.5, 127.5, 127.5],
                                  std=[127.5, 127.5, 127.5])
 
-    cached_embeddings = fn.external_source(source=embed_iterator, device='cpu')
+    cached_embeddings = fn.external_source(
+        source=embed_iterator,
+        device="cpu")
 
     return images_normalized, images_scaled, cached_embeddings
 
