@@ -213,9 +213,9 @@ def train_model(args):
             batch = batch[0]
             normalized, scaled, embeddings = batch["normalized"], batch["scaled"], batch["embeddings"]
             print(f"Batch epoch={epoch}")
-            print(f"normalized = {normalized}")
-            print(f"scaled = {scaled}")
-            print(f"embeddings = {embeddings}")
+            #print(f"normalized = {normalized}")
+            #print(f"scaled = {scaled}")
+            #print(f"embeddings = {embeddings}")
 
     return
 

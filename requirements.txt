@@ -2,8 +2,7 @@ torch
 torchvision
 einops
 deepspeed
-
-xformers
+numpy
 
 lovely-tensors
 pillow
@@ -11,4 +10,3 @@ tqdm
 
 gymnasium
 PyParsing
-git+https://github.com/catid/crafter.git#egg=crafter

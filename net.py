@@ -279,3 +279,148 @@ class ImageDecoder(nn.Module):
 
     def forward(self, x):
         return self.decoder(x)
+
+
+################################################################################
+# CMAE ViT
+
+class SPT(nn.Module):
+    def __init__(self, *, dim, patch_size, channels = 3):
+        super().__init__()
+        patch_dim = patch_size * patch_size * 5 * channels
+
+        self.to_patch_tokens = nn.Sequential(
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size),
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim)
+        )
+
+    def forward(self, x):
+        shifts = ((1, -1, 0, 0), (-1, 1, 0, 0), (0, 0, 1, -1), (0, 0, -1, 1))
+        shifted_x = list(map(lambda shift: F.pad(x, shift), shifts))
+        x_with_shifts = torch.cat((x, *shifted_x), dim = 1)
+        return self.to_patch_tokens(x_with_shifts)
+
+class CMAEViT(nn.Module):
+    """
+    Vision Transformer for MAE pre-training
+    """
+    def __init__(self,
+                 arch='b',
+                 img_size=224,
+                 patch_size=16,
+                 channels=3,
+                 dim=256,
+                 out_indices=-1,
+                 dropout=0.1,
+                 mask_ratio=0.75,
+                 ):
+        super(CMAEViT, self).__init__()
+
+        self.to_patch_embedding = SPT(dim=dim, patch_size=patch_size, channels=channels)
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embed_dims))
+
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, num_patches + self.num_extra_tokens,
+                        self.embed_dims))
+        self.pos_embed.requires_grad = False
+
+        self.mask_ratio = mask_ratio
+        self.num_patches = self.patch_resolution[0] * self.patch_resolution[1]
+        self.drop_after_pos = nn.Dropout(p=dropout)
+
+        self.final_norm = SimpleRMSNorm(dim)
+
+        patch_count = img_size//patch_size
+        self.neckformer = NeckFormer(d_in=dim, height=patch_count, width=patch_count, d_out=dim, d_hidden=dim, segments=8, depth=2, expansion_factor=4, dropout=dropout)
+
+
+    def init_weights(self):
+        super(CMAEViT, self).init_weights()
+        if not (isinstance(self.init_cfg, dict)
+                and self.init_cfg['type'] == 'Pretrained'):
+            # initialize position  embedding in backbone
+            pos_embed = build_2d_sincos_position_embedding(
+                int(self.num_patches**.5),
+                self.pos_embed.shape[-1],
+                cls_token=True)
+            self.pos_embed.data.copy_(pos_embed.float())
+
+            w = self.patch_embed.projection.weight.data
+            torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+
+            torch.nn.init.normal_(self.cls_token, std=.02)
+
+            self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def random_masking(self, x, mask_ratio=0.65):
+        N, L, D = x.shape  # batch, length, dim
+
+        if mask_ratio > 0:
+            seq_len = L // 4
+            len_keep = int(seq_len * (1 - mask_ratio))
+            noise = torch.rand(N, seq_len, device=x.device)  # noise in [0,1]
+
+            ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+            ids_keep_s = ids_shuffle[:, :len_keep]
+            mask = torch.zeros((N, seq_len), device=x.device)
+            mask = torch.scatter(mask, 1, ids_keep_s, 1.0)
+
+            mask = mask.reshape(N, int(seq_len ** 0.5), int(seq_len ** 0.5)).unsqueeze(dim=2).unsqueeze(dim=4)
+            mask = mask.expand(-1, -1, 2, -1, 2).flatten(1, 2).flatten(2, 3)
+
+            mask = mask.flatten(1)
+            mask_index = torch.argsort(mask, dim=-1, descending=True)
+            ids_keep = mask_index[:, :4 * len_keep]
+
+            x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+            ids_restore = torch.argsort(mask_index, dim=1)
+            mask_out = ~mask.to(torch.bool)
+            mask_out = mask_out * 1.0
+
+            return x_masked, mask_out, ids_restore
+        else:
+            ids_keep = torch.arange(0, L, device=x.device, dtype=torch.long)
+            ids_keep = ids_keep.unsqueeze(dim=0).repeat(N, 1)
+            x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+            ids_restore = torch.argsort(ids_keep, dim=1)
+            mask_out = torch.zeros([N, L], device=x.device)
+
+            return x_masked, mask_out, ids_restore
+
+    def forward(self, x, use_cls=True):
+        B = x.shape[0]
+        x = self.to_patch_embedding(x)[0]
+
+        # add pos embed w/o cls token
+        x = x + self.pos_embed[:, 1:, :]
+
+        # masking: length -> length * mask_ratio
+        x, mask, ids_restore = self.random_masking(x, self.mask_ratio)
+
+        if use_cls:
+            # append cls token
+            cls_token = self.cls_token + self.pos_embed[:, :1, :]
+            cls_tokens = cls_token.expand(B, -1, -1)
+            x = torch.cat((cls_tokens, x), dim=1)
+
+        x = self.drop_after_pos(x)
+
+        self.neckformer(x)
+
+        x = self.final_norm(x)
+
+        return (x, mask, ids_restore)

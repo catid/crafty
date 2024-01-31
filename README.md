@@ -24,10 +24,18 @@ cd crafty
 conda create -n crafty python=3.10
 conda activate crafty
 
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+
 pip install -U -r requirements.txt
+
+pip install ninja
+pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+
+pip install git+https://github.com/catid/crafter.git#egg=crafter
 
 # Update this from https://github.com/NVIDIA/DALI#installing-dali
 pip install --upgrade nvidia-dali-cuda110 --extra-index-url https://developer.download.nvidia.com/compute/redist
+
 ```
 
 ## Train
